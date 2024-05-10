@@ -1,5 +1,7 @@
+import { Config, User } from "./src/config-types";
 import { CwRedirect } from "./src/cw-redirect-types";
 import { CwRoot, Item } from "./src/cw-types";
+import Mailjet from "node-mailjet";
 
 const isRedirect = (obj: any): obj is CwRedirect => {
   return obj.redirect;
@@ -9,7 +11,7 @@ const isItems = (obj: any): obj is CwRoot => {
   return obj.universes;
 };
 
-const get_items = async (search: string) => {
+const getItems = async (search: string) => {
   const result = await fetch(
     `https://pds.chemistwarehouse.com.au/search?identifier=AU&fh_start_index=0&fh_location=%2F%2Fcatalog01%2Fen_AU%2Fcategories%3C%7Bcatalog01_chemau%7D%2F%24s%3D${encodeURIComponent(search)}`
   );
@@ -54,13 +56,85 @@ const calculateDiscounts = (items: Record<string, string | number>[]) => {
   });
 };
 
-const listItemNames = (items: Item[]) =>
-  items.map((x) => x.attribute.find((x) => x.name == "name")?.value[0].value);
+type ExtractedItems = Record<string, string | number>[];
 
-get_items("sukin").then((x) =>
-  console.log(
-    calculateDiscounts(
-      getItemAttributes(x, ["name", "price_cw_au", "rrp_cw_au", "_thumburl"])
-    )
-  )
-);
+const generateEmailHtml = (
+  found: { search: string; items: ExtractedItems }[]
+) => {
+  const stringList = [];
+  for (const f of found) {
+    stringList.push(`<h2>From ${f.search}</h2>`);
+    stringList.push("<table>");
+    stringList.push(
+      "<tr><td></td><td>Name</td><td>Price</td><td>MSRP</td></tr>"
+    );
+    for (const i of f.items) {
+      stringList.push("<tr>");
+      stringList.push(`<td><img src="${i._thumburl}"></td>`);
+      stringList.push(`<td>${i.name}</td>`);
+      stringList.push(`<td>$${i.price_cw_au}</td>`);
+      stringList.push(`<td>$${i.rrp_cw_au}</td>`);
+      stringList.push("</tr>");
+    }
+    stringList.push("</table>");
+  }
+  return stringList.join("\n");
+};
+
+const runUser = async (user: User) => {
+  console.log(`running user ${user.email}`);
+
+  const notifyItems = [];
+  for (const query of user.queries) {
+    console.log(`running query ${query.search}`);
+
+    const items = calculateDiscounts(
+      getItemAttributes(await getItems(query.search), [
+        "name",
+        "price_cw_au",
+        "rrp_cw_au",
+        "_thumburl",
+      ])
+    );
+    console.log(`found ${items.length} items`);
+
+    const threshold = query.threshold ?? user.threshold;
+    const nItems = items.filter((x) => (x.discount as number) >= threshold);
+    if (nItems.length > 0) {
+      console.log(`found ${nItems.length} items above threshold`);
+      notifyItems.push({ search: query.search, items: nItems });
+    }
+  }
+
+  // Nothing to report
+  if (notifyItems.length == 0) return;
+
+  const mailClient = Mailjet.Client.apiConnect(
+    process.env.MJ_PUBLIC_KEY ?? "",
+    process.env.MJ_SECRET_KEY ?? ""
+  );
+
+  try {
+    const result = await mailClient.post("send", { version: "v3.1" }).request({
+      Messages: [
+        {
+          From: { Email: process.env.MJ_SENDER_EMAIL },
+          To: [{ Email: user.email }],
+          Subject: `Chemist Warehouse items on discount`,
+          TextPart: `A number of watched items are on larger discount`,
+          HTMLPart: generateEmailHtml(notifyItems),
+        },
+      ],
+    });
+    console.log("mail sent");
+  } catch (error) {
+    console.log(`failed to send mail ${error}`);
+  }
+};
+
+const runConfig = async () => {
+  const config = (await Bun.file("./config.json").json()) as Config;
+  await Promise.all(config.users.map(runUser));
+};
+
+runConfig().then((x) => console.log("finished scan"));

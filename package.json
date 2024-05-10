@@ -9,6 +9,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@types/node-mailjet": "^3.3.12",
+    "node-mailjet": "^6.0.5",
     "prettier": "^3.2.5"
   }
 }
