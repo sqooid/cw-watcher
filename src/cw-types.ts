@@ -1,4 +1,4 @@
-export interface Root {
+export interface CwRoot {
   info: Info
   universes: Universes
   footer: Footer
